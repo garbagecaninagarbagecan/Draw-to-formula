@@ -2,6 +2,7 @@
 
 const PARK_W = 3;
 const PARK_H = 2;
+const SNAP_DIST = 0.15;
 const PALETTE = ['#c74440', '#2d70b3', '#388c46', '#6042a6', '#fa7e19', '#0e8ac8', '#b8860b', '#c2185b'];
 
 const state = {
@@ -10,6 +11,7 @@ const state = {
   mode: 'draw',
   view: { cx: 1.5, cy: 1.0, ppk: 260 },
   selectedFeature: null,
+  selectedSeg: null,
   isolateId: null,
   nextId: 1
 };
@@ -349,13 +351,13 @@ function segmentLength(seg) {
 function findAnchor(rawPts, segments) {
   const p0 = rawPts[0], p1 = rawPts[rawPts.length - 1];
   if (!segments.length) return { target: round3(p0.y), segEnd: 'left', dist: 0 };
-  const first = segments[0], last = segments[segments.length - 1];
-  const opts = [
-    { d: Math.hypot(p0.x - last.x2, p0.y - last.y2), target: last.y2, segEnd: 'left' },
-    { d: Math.hypot(p1.x - last.x2, p1.y - last.y2), target: last.y2, segEnd: 'right' },
-    { d: Math.hypot(p0.x - first.x1, p0.y - first.y1), target: first.y1, segEnd: 'left' },
-    { d: Math.hypot(p1.x - first.x1, p1.y - first.y1), target: first.y1, segEnd: 'right' }
-  ];
+  const opts = [];
+  for (const seg of segments) {
+    opts.push({ d: Math.hypot(p0.x - seg.x1, p0.y - seg.y1), target: seg.y1, segEnd: 'left' });
+    opts.push({ d: Math.hypot(p1.x - seg.x1, p1.y - seg.y1), target: seg.y1, segEnd: 'right' });
+    opts.push({ d: Math.hypot(p0.x - seg.x2, p0.y - seg.y2), target: seg.y2, segEnd: 'left' });
+    opts.push({ d: Math.hypot(p1.x - seg.x2, p1.y - seg.y2), target: seg.y2, segEnd: 'right' });
+  }
   opts.sort((a, b) => a.d - b.d);
   return { target: opts[0].target, segEnd: opts[0].segEnd, dist: opts[0].d };
 }
@@ -380,9 +382,10 @@ function buildSegmentFromStroke(rawPts, anchor, forceType) {
     pick = cands.sort((a, b) => a.score - b.score)[0];
   }
   const base = pick.base;
-  const c = anchor.segEnd === 'left'
-    ? round3(anchor.target - base(x1))
-    : round3(anchor.target - base(x2));
+  const snapped = anchor.dist <= SNAP_DIST;
+  const c = snapped
+    ? (anchor.segEnd === 'left' ? round3(anchor.target - base(x1)) : round3(anchor.target - base(x2)))
+    : 0;
   const fn = x => base(x) + c;
   const seg = {
     id: state.nextId++,
@@ -422,17 +425,21 @@ function segmentBoundsOK(seg) {
 }
 
 let els = null, ctx = null, dpr = 1;
-let drawing = false, stroke = [], panning = null, draggingFeature = null, dragMoved = false;
+let drawing = false, stroke = [], panning = null, draggingFeature = null, dragMoved = false, draggingSeg = null, segMoved = false, segDragY = 0;
 
 function addStroke(rawPts, forceType) {
   const anchor = findAnchor(rawPts, state.segments);
   const res = buildSegmentFromStroke(rawPts, anchor, forceType);
   if (res.error) return res;
   const seg = res.seg;
+  const hitFeature = state.features.find(f => segHitsFeature(seg, f));
+  if (hitFeature) {
+    return { error: 'That section would cross the ' + hitFeature.label.toLowerCase() + ' — draw around it.' };
+  }
   state.segments.push(seg);
   state.segments.sort((a, b) => a.x1 - b.x1);
-  if (anchor.dist > 0.25) {
-    toast('Snapped to the nearest track endpoint (' + fmt(anchor.dist) + ' km away). Draw closer for an exact join.');
+  if (anchor.dist > SNAP_DIST) {
+    toast('Drawn free-hand — nearest endpoint is ' + fmt(anchor.dist) + ' km away (within ' + fmt(SNAP_DIST) + ' km it would have snapped).');
   }
   if (state.segments.length > 1) {
     const i = state.segments.indexOf(seg);
@@ -507,23 +514,142 @@ function worldFromEvent(e) {
   return { x: (px - rect.width / 2) / v.ppk + v.cx, y: (rect.height / 2 - py) / v.ppk + v.cy };
 }
 
+function pointInFeature(f, x, y) {
+  if (f.type === 'ellipse' || f.type === 'circle') {
+    const dx = (x - f.cx) / f.rx, dy = (y - f.cy) / f.ry;
+    return dx * dx + dy * dy <= 1;
+  }
+  let inside = false;
+  const pts = f.pts;
+  for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+    if ((pts[a].y > y) !== (pts[b].y > y) &&
+        x < (pts[b].x - pts[a].x) * (y - pts[a].y) / (pts[b].y - pts[a].y) + pts[a].x) inside = !inside;
+  }
+  return inside;
+}
+
 function featureAt(w) {
   for (let i = state.features.length - 1; i >= 0; i--) {
-    const f = state.features[i];
+    if (pointInFeature(state.features[i], w.x, w.y)) return state.features[i];
+  }
+  return null;
+}
+
+function featuresOverlap(a, b) {
+  const samplesOf = f => {
+    const out = [];
     if (f.type === 'ellipse' || f.type === 'circle') {
-      const dx = (w.x - f.cx) / f.rx, dy = (w.y - f.cy) / f.ry;
-      if (dx * dx + dy * dy <= 1) return f;
-    } else {
-      let inside = false;
-      const pts = f.pts;
-      for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
-        if ((pts[a].y > w.y) !== (pts[b].y > w.y) &&
-            w.x < (pts[b].x - pts[a].x) * (w.y - pts[a].y) / (pts[b].y - pts[a].y) + pts[a].x) inside = !inside;
+      for (let i = 0; i < 24; i++) {
+        const t = i / 24 * Math.PI * 2;
+        out.push({ x: f.cx + f.rx * Math.cos(t), y: f.cy + f.ry * Math.sin(t) });
       }
-      if (inside) return f;
+      out.push({ x: f.cx, y: f.cy });
+    } else {
+      for (const p of f.pts) out.push({ x: p.x, y: p.y });
+      out.push({
+        x: f.pts.reduce((s, p) => s + p.x, 0) / f.pts.length,
+        y: f.pts.reduce((s, p) => s + p.y, 0) / f.pts.length
+      });
+    }
+    return out;
+  };
+  const A = samplesOf(a), B = samplesOf(b);
+  return A.some(p => pointInFeature(b, p.x, p.y)) || B.some(p => pointInFeature(a, p.x, p.y));
+}
+
+function segHitsFeature(seg, f) {
+  const n = 80;
+  for (let i = 0; i <= n; i++) {
+    const x = seg.x1 + (seg.x2 - seg.x1) * i / n;
+    if (pointInFeature(f, x, seg.fn(x))) return true;
+  }
+  return false;
+}
+
+function featureOverlapsAnything(f, exclude) {
+  for (const o of state.features) {
+    if (o === f || o === exclude) continue;
+    if (featuresOverlap(f, o)) return o.label.toLowerCase();
+  }
+  for (const seg of state.segments) {
+    if (segHitsFeature(seg, f)) return 'a track section';
+  }
+  return null;
+}
+
+function segmentAt(w) {
+  const v = state.view;
+  let best = null, bestD = Infinity;
+  for (const seg of state.segments) {
+    const n = 120;
+    for (let i = 0; i <= n; i++) {
+      const x = seg.x1 + (seg.x2 - seg.x1) * i / n;
+      const d = Math.hypot((w.x - x) * v.ppk, (w.y - seg.fn(x)) * v.ppk);
+      if (d < bestD) { bestD = d; best = seg; }
+    }
+  }
+  return bestD <= 8 ? best : null;
+}
+
+function moveFeature(f, dx, dy) {
+  f.cx += dx; f.cy += dy;
+  if (f.pts) f.pts = f.pts.map(p => ({ x: p.x + dx, y: p.y + dy }));
+}
+
+function featureMoved(f, dx, dy) {
+  const cand = Object.assign({}, f);
+  cand.cx = f.cx + dx;
+  cand.cy = f.cy + dy;
+  if (f.pts) cand.pts = f.pts.map(p => ({ x: p.x + dx, y: p.y + dy }));
+  return cand;
+}
+
+function featurePosOK(f, dx, dy) {
+  return !featureOverlapsAnything(featureMoved(f, dx, dy), f);
+}
+
+function findFreeSpot(f) {
+  if (featurePosOK(f, 0, 0)) return { x: f.cx, y: f.cy };
+  for (let r = 0.15; r <= 1.25; r += 0.15) {
+    for (let a = 0; a < 12; a++) {
+      const ang = a / 12 * Math.PI * 2;
+      const dx = r * Math.cos(ang), dy = r * Math.sin(ang);
+      const nx = f.cx + dx, ny = f.cy + dy;
+      if (nx < 0.15 || nx > PARK_W - 0.15 || ny < 0.15 || ny > PARK_H - 0.15) continue;
+      if (featurePosOK(f, dx, dy)) return { x: nx, y: ny };
     }
   }
   return null;
+}
+
+function segShiftValid(seg, newC) {
+  const test = { x1: seg.x1, x2: seg.x2, fn: x => seg.base(x) + newC };
+  for (const f of state.features) {
+    if (segHitsFeature(test, f)) return false;
+  }
+  return true;
+}
+
+function snappedShift(seg, newC) {
+  let best = null;
+  for (const o of state.segments) {
+    if (o === seg) continue;
+    for (const ex of [seg.x1, seg.x2]) {
+      for (const pair of [[o.x1, o.y1], [o.x2, o.y2]]) {
+        if (Math.abs(pair[0] - ex) >= 0.02) continue;
+        const dy = pair[1] - (seg.base(ex) + newC);
+        if (Math.abs(dy) <= 0.08 && (best === null || Math.abs(dy) < Math.abs(best))) best = dy;
+      }
+    }
+  }
+  return best === null ? newC : newC + best;
+}
+
+function applySegShift(seg, newC) {
+  seg.c = newC;
+  seg.fn = x => seg.base(x) + seg.c;
+  seg.y1 = round3(seg.fn(seg.x1));
+  seg.y2 = round3(seg.fn(seg.x2));
 }
 
 function draw() {
@@ -634,9 +760,6 @@ function draw() {
   const isolated = state.isolateId;
   for (const seg of state.segments) {
     const dim = isolated && seg.id !== isolated;
-    ctx.strokeStyle = seg.color;
-    ctx.globalAlpha = dim ? 0.15 : 1;
-    ctx.lineWidth = dim ? 2 : 3;
     ctx.beginPath();
     const n = 200;
     for (let i = 0; i <= n; i++) {
@@ -644,6 +767,15 @@ function draw() {
       const X = sx(x), Y = sy(seg.fn(x));
       if (i) ctx.lineTo(X, Y); else ctx.moveTo(X, Y);
     }
+    if (state.selectedSeg === seg) {
+      ctx.globalAlpha = dim ? 0.15 : 0.25;
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 9;
+      ctx.stroke();
+    }
+    ctx.strokeStyle = seg.color;
+    ctx.globalAlpha = dim ? 0.15 : 1;
+    ctx.lineWidth = dim ? 2 : 3;
     ctx.stroke();
   }
 
@@ -722,6 +854,7 @@ function renderSidebar() {
       e.stopPropagation();
       state.segments = state.segments.filter(s => s.id !== seg.id);
       if (state.isolateId === seg.id) state.isolateId = null;
+      if (state.selectedSeg === seg) state.selectedSeg = null;
       refresh();
     });
     head.appendChild(dot);
@@ -844,6 +977,7 @@ function undo() {
   const last = sorted[sorted.length - 1];
   state.segments = state.segments.filter(s => s !== last);
   if (state.isolateId === last.id) state.isolateId = null;
+  if (state.selectedSeg === last) state.selectedSeg = null;
   refresh();
 }
 
@@ -860,7 +994,7 @@ function init() {
 
   state.features = [
     makeFeature('lake', { x: 2.05, y: 1.0 }),
-    makeFeature('playground', { x: 0.8, y: 1.7 }),
+    makeFeature('playground', { x: 0.5, y: 1.7 }),
     makeFeature('cafe', { x: 0.55, y: 0.45 })
   ];
 
@@ -878,14 +1012,23 @@ function init() {
     if (state.mode === 'edit') {
       const f = featureAt(w);
       state.selectedFeature = f;
+      state.selectedSeg = null;
       if (f) {
         draggingFeature = f;
         draggingFeature._off = { x: w.x - f.cx, y: w.y - f.cy };
+      } else {
+        const seg = segmentAt(w);
+        state.selectedSeg = seg;
+        if (seg) {
+          draggingSeg = seg;
+          segDragY = w.y;
+        }
       }
       draw();
       return;
     }
     state.selectedFeature = null;
+    state.selectedSeg = null;
     drawing = true;
     stroke = [w];
     draw();
@@ -905,9 +1048,39 @@ function init() {
       const nx = w.x - f._off.x, ny = w.y - f._off.y;
       const dx = nx - f.cx, dy = ny - f.cy;
       if (dx || dy) dragMoved = true;
-      f.cx += dx; f.cy += dy;
-      if (f.pts) f.pts = f.pts.map(p => ({ x: p.x + dx, y: p.y + dy }));
+      let applied = false;
+      if ((dx || dy) && featurePosOK(f, dx, dy)) {
+        moveFeature(f, dx, dy);
+        applied = true;
+      } else if (dx && featurePosOK(f, dx, 0)) {
+        moveFeature(f, dx, 0);
+        applied = true;
+      } else if (dy && featurePosOK(f, 0, dy)) {
+        moveFeature(f, 0, dy);
+        applied = true;
+      }
+      if ((dx || dy) && !applied) {
+        const hit = featureOverlapsAnything(featureMoved(f, dx, dy), f);
+        if (hit) toast('Blocked — the ' + f.label.toLowerCase() + ' would overlap ' + hit + '.');
+      }
       draw();
+      return;
+    }
+    if (draggingSeg) {
+      const w = worldFromEvent(e);
+      const dy = w.y - segDragY;
+      if (dy) {
+        segMoved = true;
+        let target = snappedShift(draggingSeg, draggingSeg.c + dy);
+        if (!segShiftValid(draggingSeg, target)) target = draggingSeg.c + dy;
+        if (segShiftValid(draggingSeg, target)) {
+          applySegShift(draggingSeg, target);
+          segDragY = w.y;
+        } else {
+          toast('Blocked — the section would overlap a park feature.');
+        }
+        draw();
+      }
       return;
     }
     if (drawing) {
@@ -932,6 +1105,18 @@ function init() {
       }
       draggingFeature = null;
       dragMoved = false;
+    }
+    if (draggingSeg) {
+      if (segMoved) {
+        const s = draggingSeg;
+        s.length = segmentLength(s);
+        s.desmos = desmosString(s);
+        s.html = equationHTML(s);
+        state.selectedSeg = null;
+        refresh();
+      }
+      draggingSeg = null;
+      segMoved = false;
     }
     if (drawing) {
       drawing = false;
@@ -973,6 +1158,14 @@ function init() {
       toast(f.label + ' deleted');
       draw();
       e.preventDefault();
+    } else if (e.key === 'Delete' && state.selectedSeg) {
+      const s = state.selectedSeg;
+      state.segments = state.segments.filter(x => x !== s);
+      if (state.isolateId === s.id) state.isolateId = null;
+      state.selectedSeg = null;
+      toast(s.label + ' deleted');
+      refresh();
+      e.preventDefault();
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
@@ -985,7 +1178,7 @@ function init() {
     document.getElementById('modeDraw').classList.toggle('active', m === 'draw');
     document.getElementById('modeEdit').classList.toggle('active', m === 'edit');
     els.canvas.classList.toggle('editing', m === 'edit');
-    if (m === 'edit') toast('Edit mode: drag the lake, playground and café. Delete removes the selected shape.');
+    if (m === 'edit') toast('Edit mode: drag features, or click a section to move it. Delete removes the selection.');
     else toast('Draw mode: left-drag to draw a track section.');
   }
   document.getElementById('modeDraw').addEventListener('click', () => setMode('draw'));
@@ -993,7 +1186,14 @@ function init() {
 
   document.querySelectorAll('[data-add]').forEach(btn => {
     btn.addEventListener('click', () => {
-      state.features.push(makeFeature(btn.dataset.add));
+      const f = makeFeature(btn.dataset.add);
+      const spot = findFreeSpot(f);
+      if (!spot) {
+        toast('No room — a ' + f.label.toLowerCase() + ' would overlap something everywhere.');
+        return;
+      }
+      moveFeature(f, spot.x - f.cx, spot.y - f.cy);
+      state.features.push(f);
       draw();
     });
   });
@@ -1002,6 +1202,7 @@ function init() {
   document.getElementById('btnClear').addEventListener('click', () => {
     state.segments = [];
     state.isolateId = null;
+    state.selectedSeg = null;
     refresh();
   });
   document.getElementById('btnExample').addEventListener('click', loadExample);
