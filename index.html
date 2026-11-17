@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Park Track Designer — MUF0091 Group Application Task</title>
+<style>
+  :root {
+    --border: #d8dde3;
+    --muted: #6b7680;
+    --accent: #2d70b3;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+    color: #1e2530;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 14px;
+    background: #22303f;
+    color: #fff;
+    flex: 0 0 auto;
+  }
+  header .title { font-weight: bold; font-size: 15px; white-space: nowrap; }
+  header .hint { color: #b9c6d2; font-size: 12px; flex: 1 1 auto; }
+  header .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  header button {
+    background: #3b4c5f;
+    color: #fff;
+    border: 1px solid #55677a;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  header button:hover { background: #4a5f75; }
+  main { display: flex; flex: 1 1 auto; min-height: 0; }
+  aside {
+    width: 340px;
+    flex: 0 0 340px;
+    border-right: 1px solid var(--border);
+    background: #fbfcfd;
+    overflow-y: auto;
+    padding: 10px;
+  }
+  section { margin-bottom: 14px; }
+  .sec-head {
+    font-weight: bold;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  select {
+    width: 100%;
+    padding: 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    background: #fff;
+  }
+  .modes { display: flex; gap: 6px; margin-top: 8px; }
+  .modes button {
+    flex: 1;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .modes button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .seg-item {
+    border: 1px solid var(--border);
+    border-left: 4px solid #999;
+    border-radius: 4px;
+    background: #fff;
+    padding: 7px 9px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .seg-item.isolated { box-shadow: 0 0 0 2px var(--accent); }
+  .seg-head { display: flex; align-items: center; gap: 6px; }
+  .seg-dot { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 11px; }
+  .seg-name { font-weight: bold; font-size: 12px; flex: 1 1 auto; }
+  .seg-btn {
+    border: 1px solid var(--border);
+    background: #f4f6f8;
+    border-radius: 3px;
+    font-size: 11px;
+    padding: 2px 6px;
+    cursor: pointer;
+    color: #333;
+  }
+  .seg-btn:hover { background: #e8ecf0; }
+  .eq {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 15px;
+    margin: 6px 0 2px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .eq sup { font-size: 10px; }
+  .eq .frac { display: inline-flex; flex-direction: column; text-align: center; vertical-align: middle; margin: 0 2px; }
+  .eq .frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 4px; }
+  .eq .rad { border-top: 1px solid currentColor; padding: 0 2px; }
+  .eq .domain { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .seg-meta { font-size: 11px; color: var(--muted); }
+  .feat-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .feat-btns button {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    padding: 5px 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .feat-btns button:hover { background: #eef2f6; }
+  .feat-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .check-row { display: flex; gap: 7px; align-items: baseline; padding: 3px 0; font-size: 12.5px; }
+  .check-ok { color: #2e7d32; font-weight: bold; }
+  .check-no { color: #c62828; font-weight: bold; }
+  #totalLen { font-size: 13px; font-weight: bold; margin-top: 6px; }
+  #graphWrap { position: relative; flex: 1 1 auto; min-width: 0; background: #fff; }
+  #graph { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+  #graph.panning { cursor: grabbing; }
+  #graph.editing { cursor: default; }
+  .zoomctl { position: absolute; right: 14px; top: 14px; display: flex; flex-direction: column; gap: 4px; }
+  .zoomctl button {
+    width: 32px; height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    font-size: 16px;
+    cursor: pointer;
+    color: #333;
+  }
+  .zoomctl button:hover { background: #eef2f6; }
+  #toast {
+    position: absolute;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    background: rgba(30, 37, 48, 0.92);
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    max-width: 80%;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s;
+    text-align: center;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title">🏃 Park Track Designer — MUF0091</div>
+  <div class="hint">Left-drag: draw a track section (auto-converted to an equation) &nbsp;·&nbsp; Right-drag: pan &nbsp;·&nbsp; Scroll: zoom</div>
+  <div class="actions">
+    <button id="btnUndo">↩ Undo</button>
+    <button id="btnClear">🗑 Clear</button>
+    <button id="btnExample">Load example</button>
+    <button id="btnCopyAll">Copy all (Desmos)</button>
+    <button id="btnPng">Download PNG</button>
+  </div>
+</header>
+<main>
+  <aside>
+    <section>
+      <div class="sec-head">New section</div>
+      <label for="forceType">Function type for the next stroke</label>
+      <select id="forceType">
+        <option value="auto">Auto — best fit</option>
+        <option value="poly">Polynomial (line / parabola / cubic)</option>
+        <option value="sqrt">Square root</option>
+        <option value="hyperbola">Rectangular hyperbola</option>
+        <option value="exp">Exponential</option>
+        <option value="log">Logarithmic</option>
+        <option value="sine">Sine</option>
+      </select>
+      <div class="modes">
+        <button id="modeDraw" class="active">✏️ Draw</button>
+        <button id="modeEdit">✥ Edit features</button>
+      </div>
+    </section>
+    <section>
+      <div class="sec-head">Equations</div>
+      <div id="segList"></div>
+    </section>
+    <section>
+      <div class="sec-head">Park features</div>
+      <div class="feat-btns">
+        <button data-add="lake">+ Lake</button>
+        <button data-add="playground">+ Playground</button>
+        <button data-add="cafe">+ Café</button>
+      </div>
+      <div class="feat-hint">Use “Edit features” mode to drag them. Select one and press Delete to remove it.</div>
+    </section>
+    <section>
+      <div class="sec-head">Design checklist</div>
+      <div id="checklist"></div>
+      <div id="totalLen"></div>
+    </section>
+  </aside>
+  <div id="graphWrap">
+    <canvas id="graph"></canvas>
+    <div class="zoomctl">
+      <button id="zin" title="Zoom in">+</button>
+      <button id="zout" title="Zoom out">−</button>
+      <button id="zreset" title="Reset view">⌂</button>
+    </div>
+    <div id="toast"></div>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
